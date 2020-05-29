@@ -1,0 +1,118 @@
+rm(list=ls(all=TRUE))
+t=1:4000
+N=length(t)
+nt <- rnorm(N,0,0.01);var(nt)  #White noise sequence
+###Chaotic noise background
+parameters<-c(a=10,b=8/3,c=28)
+state<-c(X=1,Y=1,Z=1)
+Lorenz<-function(t,state,parameters)
+{
+  with(as.list(c(state,parameters)),
+       {
+         dX=a*(Y-X)
+         dY=-X*Z+c*X-Y
+         dZ=X*Y-b*Z
+         list(c(dX,dY,dZ))
+       })
+}
+times<-seq(0.01,100,0.01)
+library(deSolve)
+out1<-as.data.frame(rk4(state,times,Lorenz,parms=parameters))
+k1=3100;cht<-out1[k1:(k1+N-1),2];var(cht)
+###Weak pulse function
+#k is the number of impulses
+#t is the pulse length
+#TT is the pulse location
+#a is the pulse amplitude
+si <- function(k,t,TT,a)
+{
+  st=matrix(0,k,length(t))
+  for (i in 1:k)
+  {
+    st[i,]=(t%%TT[i]==0)*a[i]
+  }
+  return(st)
+}
+#Construct the phase space
+#a is the sequence (vector)(xt)
+#b is the embedded dimension (m)
+#c is the delay time (T)
+space<-function(a,b,c)
+{
+  n0=length(a)-(b-1)*c
+  X_t=matrix(0,(length(a)-(b-1)*c),b)
+  for(i in 1:b)
+  {
+    X_t[,(i)]=a[(1+(b-i)*c):(n0+(b-i)*c)]
+  }
+  X_t=X_t[-n0,]
+  return(X_t)
+}
+T=7;m=6  #Delay time T;embedded dimension m
+n=N-(m-1)*T;n
+library(Rcpp)
+library(RSNNS)
+TT0 = 130; aa0 = 0.1
+k=length(aa0)
+s<-si(k,t=1:4000,TT0,aa0)
+s[1:k,1:50]=0;s[1:k,(N-49):N]=0
+s=apply(s,2,sum);var(s)
+#x is the raw data of the observation
+x=cht+nt+s;var(x)
+#Calculate SNR
+deltast=sum((s-mean(s))^2)/length(s)
+deltact=sum((cht-mean(cht))^2)/length(cht)
+deltant=sum((nt-mean(nt))^2)/length(nt)
+SNR=10*log(deltast/(deltact+deltant),10);SNR
+st<-si(k,t=1:4000,TT0,a=c(1))
+st[,1:50]=0;st[,(N-49):N]=0
+#Turn st into a list of k elements, each of which is 
+#the reconstructed phase space of st[i,].
+St=list(c())
+for (i in 1:k)
+{
+  St[[i]]<-space(st[i,],m,T)
+}
+#Data normalization
+xt=scale(x)
+#The phase space reconstruction of xt
+Xt<-space(xt,m,T);dim(Xt)
+#Jordan neural network training
+inputs<-Xt;  # inputs;dim(Xt)
+outputs<-xt[((m-1)*T+2):N]; # outputs;length(outputs)
+#The number of hidden layer neurons in Jordan neural network
+r=3
+g<-jordan(inputs,outputs,size=r,initFunc="JE_Weights",
+   learnFuncParams=c(0.01),shufflePatterns=T,maxit=1000)
+########(Finite difference method)
+#Given the value of a 
+a1=rep(0,k)   
+a=rep(1,k)
+guiji=c()
+time=0
+while( (abs(a-a1)>0.0001)|(time<100))
+{
+  time=time+1
+  a=a1
+  Ra=rep(0,3)
+  Ra_1=rep(0,3)
+  Ra_2=rep(0,3)
+  aa=seq(a-0.01,a+0.01,length.out=3)
+  for (i in 1:length(aa))
+  { 
+    xtwave=scale(x-t(aa[i]%*%st))
+    in_put=space(xtwave,m,T)
+    out_put=xtwave[((m-1)*T+2):N]
+    Ra[i]=sum((out_put-predict(g,in_put))^2)
+    if(i>1)
+    {  Ra_1[i]=(Ra[i-1]-Ra[i])/(aa[i-1]-aa[i])  }
+    if(i>2)
+    {  Ra_2[i]=(Ra[i]-2*Ra[i-1]+Ra[i-2])/(aa[i-2]-aa[i-1])^2  }
+  }
+  a1=a-(sum(Ra_1)/2)/sum(Ra_2)   #Update a
+  guiji[time]=a1
+}
+
+a
+a1
+plot(guiji,type="l")
